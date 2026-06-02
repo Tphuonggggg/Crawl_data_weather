@@ -6,12 +6,14 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import pandas as pd
+import json
 import time
 import os
 import math
 from datetime import date, timedelta
 
 os.makedirs("data/raw/openmeteo_2026", exist_ok=True)
+PROGRESS_PATH = "data/raw/openmeteo_2026/crawl_progress.json"
 
 POINT_SPAN_KM = 25
 POINT_COUNT = 5
@@ -161,6 +163,40 @@ def load_complete_province_file(fpath):
         return None
 
     return df
+
+
+def load_completed_provinces():
+    if not os.path.exists(PROGRESS_PATH):
+        return set()
+
+    try:
+        with open(PROGRESS_PATH, "r", encoding="utf-8") as handle:
+            progress = json.load(handle)
+    except Exception:
+        return set()
+
+    if progress.get("start_date") != START_DATE or progress.get("end_date") != END_DATE:
+        return set()
+
+    completed = progress.get("completed_provinces", [])
+    if not isinstance(completed, list):
+        return set()
+
+    return set(completed)
+
+
+def save_completed_provinces(completed_provinces):
+    payload = {
+        "start_date": START_DATE,
+        "end_date": END_DATE,
+        "completed_provinces": sorted(completed_provinces),
+    }
+
+    temp_path = f"{PROGRESS_PATH}.tmp"
+    with open(temp_path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+
+    os.replace(temp_path, PROGRESS_PATH)
 
 REGION_MAP = {
     "Hà Nội":      "Đồng bằng sông Hồng",
@@ -428,6 +464,7 @@ def crawl_province(name, points):
 def crawl_all():
     all_dfs = []
     total   = len(PROVINCES)
+    completed_provinces = load_completed_provinces()
 
     print("=" * 65)
     print("  🌏 KTTV Việt Nam 2026 — 34 tỉnh/thành sau sáp nhập")
@@ -437,6 +474,9 @@ def crawl_all():
         f" | {len(DAILY_VARS)} biến"
     )
     print("=" * 65)
+
+    if completed_provinces:
+        print(f"  🔁 Resume: đã ghi nhận {len(completed_provinces)} tỉnh/thành hoàn tất từ lần chạy trước")
 
     for i, (name, coords) in enumerate(PROVINCES.items(), 1):
         if isinstance(coords, tuple):
@@ -470,9 +510,21 @@ def crawl_all():
             f"{safe}_{START_DATE}_{END_DATE}.csv"
         )
 
+        if name in completed_provinces:
+            df = load_complete_province_file(fpath)
+            if df is not None:
+                print("  ⏭️  Đã hoàn tất từ lần chạy trước, bỏ qua crawl lại")
+                all_dfs.append(df)
+                time.sleep(PROVINCE_DELAY)
+                continue
+
+            completed_provinces.discard(name)
+
         df = load_complete_province_file(fpath)
         if df is not None:
             print(f"  ⏭️  Đã có file hoàn chỉnh ({len(df)} dòng)")
+            completed_provinces.add(name)
+            save_completed_provinces(completed_provinces)
         else:
             if os.path.exists(fpath):
                 print("  ♻️  File cũ chưa đủ hoặc lỗi, sẽ crawl lại tỉnh này")
@@ -480,6 +532,8 @@ def crawl_all():
             df = crawl_province(name, points)
             if df is not None:
                 df.to_csv(fpath, index=False, encoding="utf-8-sig")
+                completed_provinces.add(name)
+                save_completed_provinces(completed_provinces)
 
         if df is not None:
             all_dfs.append(df)
@@ -488,6 +542,10 @@ def crawl_all():
 
     print("\n" + "=" * 65)
     print("  📦 Đang gộp dữ liệu toàn quốc...")
+
+    if not all_dfs:
+        print("  ⚠️  Không có dữ liệu hợp lệ nào để gộp. Kiểm tra lại kết nối/API hoặc file đầu vào.")
+        return
 
     df_final = pd.concat(all_dfs, ignore_index=True)
     df_final = df_final.sort_values(["date", "province"]).reset_index(drop=True)
@@ -525,4 +583,7 @@ def crawl_all():
         print(f"  • {vung}: {grp['province'].nunique()} tỉnh")
 
 if __name__ == "__main__":
-    crawl_all()
+    try:
+        crawl_all()
+    except KeyboardInterrupt:
+        print("\n  ⏸️  Đã dừng thủ công. Lần chạy sau sẽ tiếp tục từ các tỉnh đã lưu checkpoint.")
