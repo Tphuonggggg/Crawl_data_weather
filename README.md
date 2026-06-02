@@ -10,6 +10,12 @@ Dự án này thu thập dữ liệu khí tượng thủy văn (KTTV) Việt Nam
 - `data/raw/` : chứa file gộp toàn quốc.
 - `venv_kttv/` : môi trường ảo Python có sẵn.
 
+## 2.1. Cách crawl hiện tại
+- Mỗi tỉnh/thành không còn crawl một điểm duy nhất.
+- `script/01_crawl.py` lấy 5 điểm quanh centroid cho tỉnh thông thường.
+- Các tỉnh diện tích lớn sẽ lấy 9 điểm để tăng độ đại diện không gian.
+- Dữ liệu các điểm sau đó được gộp theo ngày bằng trung bình cho các biến số và lấy mode cho các biến phân loại chính.
+
 ## 3. Yêu cầu hệ thống
 - Windows
 - Python 3.14 (môi trường `venv_kttv` hiện tại dùng Python 3.14)

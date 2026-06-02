@@ -14,10 +14,33 @@ from datetime import date, timedelta
 os.makedirs("data/raw/openmeteo_2026", exist_ok=True)
 
 POINT_SPAN_KM = 25
-POINT_COUNT = 1
+POINT_COUNT = 5
 REQUEST_DELAY = 5.0
 PROVINCE_DELAY = 5.0
 RATE_LIMIT_WAIT = 5
+
+LARGE_PROVINCES = {
+    "Quảng Ninh",
+    "Quảng Trị",
+    "Lào Cai",
+    "Điện Biên",
+    "Tuyên Quang",
+    "Cao Bằng",
+    "Lai Châu",
+    "Khánh Hòa",
+    "An Giang",
+    "Đồng Tháp",
+    "Cà Mau",
+}
+
+VERY_LARGE_PROVINCES = {
+    "Nghệ An",
+    "Thanh Hóa",
+    "Sơn La",
+    "Gia Lai",
+    "Lâm Đồng",
+    "Đắk Lắk",
+}
 
 RETRY_STRATEGY = Retry(
     total=2,
@@ -33,9 +56,10 @@ SESSION.headers.update({
 })
 
 TODAY = date.today()
-START_DATE = TODAY - timedelta(days=180)
+START_DATE_RAW = TODAY - timedelta(days=180)
+EXPECTED_DAYS = (TODAY - START_DATE_RAW).days + 1
 
-START_DATE = START_DATE.strftime("%Y-%m-%d")
+START_DATE = START_DATE_RAW.strftime("%Y-%m-%d")
 END_DATE = TODAY.strftime("%Y-%m-%d")
 
 # ── 34 tỉnh/thành sau sáp nhập — danh sách tọa độ đại diện ────────
@@ -79,16 +103,64 @@ PROVINCES = {
 
 
 def make_sample_points(lat, lon, span_km=POINT_SPAN_KM, count=POINT_COUNT):
+    if count <= 1:
+        return [(lat, lon)]
+
+    # Sample one center point plus an evenly spaced ring around it.
     dlat = span_km / 110.574
     dlon = span_km / (111.320 * max(abs(math.cos(math.radians(lat))), 0.1))
-    points = [
-        (lat, lon),
-        (lat + dlat, lon),
-        (lat, lon + dlon),
-        (lat - dlat, lon),
-        (lat, lon - dlon),
-    ]
-    return points[:count]
+
+    points = [(lat, lon)]
+    ring_count = count - 1
+    for index in range(ring_count):
+        angle = (2 * math.pi * index) / ring_count
+        offset_lat = math.sin(angle) * dlat
+        offset_lon = math.cos(angle) * dlon
+        points.append((lat + offset_lat, lon + offset_lon))
+
+    return points
+
+
+def province_sample_count(name):
+    if name in VERY_LARGE_PROVINCES:
+        return 11
+    if name in LARGE_PROVINCES:
+        return 9
+    return POINT_COUNT
+
+
+def load_complete_province_file(fpath):
+    if not os.path.exists(fpath):
+        return None
+
+    try:
+        df = pd.read_csv(fpath, parse_dates=["date", "sunrise", "sunset"])
+    except Exception:
+        return None
+
+    required_columns = {
+        "province", "region", "date", "weather_code", "temperature_2m_mean",
+        "temperature_2m_max", "temperature_2m_min", "apparent_temperature_mean",
+        "apparent_temperature_max", "apparent_temperature_min", "sunrise", "sunset",
+        "uv_index_max", "uv_index_clear_sky_max", "precipitation_sum", "rain_sum",
+        "showers_sum", "precipitation_hours", "precipitation_probability_max",
+        "relative_humidity_2m_mean", "wind_speed_10m_max", "wind_gusts_10m_max",
+        "wind_direction_10m_dominant", "shortwave_radiation_sum", "pressure_msl_mean",
+        "cloud_cover_mean", "dew_point_2m_mean", "snowfall_sum",
+        "et0_fao_evapotranspiration", "latitude", "longitude", "sunshine_hours",
+        "daylight_hours", "month", "week", "season"
+    }
+
+    if not required_columns.issubset(df.columns):
+        return None
+
+    if len(df) != EXPECTED_DAYS:
+        return None
+
+    if df["date"].nunique() != EXPECTED_DAYS:
+        return None
+
+    return df
 
 REGION_MAP = {
     "Hà Nội":      "Đồng bằng sông Hồng",
@@ -368,14 +440,26 @@ def crawl_all():
 
     for i, (name, coords) in enumerate(PROVINCES.items(), 1):
         if isinstance(coords, tuple):
-            points = make_sample_points(coords[0], coords[1])
+            points = make_sample_points(
+                coords[0],
+                coords[1],
+                count=province_sample_count(name),
+            )
         elif isinstance(coords, list) and len(coords) == 1:
-            points = make_sample_points(coords[0][0], coords[0][1])
+            points = make_sample_points(
+                coords[0][0],
+                coords[0][1],
+                count=province_sample_count(name),
+            )
         else:
             points = coords
 
         if len(points) == 1:
-            points = make_sample_points(points[0][0], points[0][1])
+            points = make_sample_points(
+                points[0][0],
+                points[0][1],
+                count=province_sample_count(name),
+            )
 
         print(f"\n[{i:02d}/{total}] {name} — {len(points)} điểm trong tỉnh")
         print(f"         Dữ liệu được lấy từ nhiều điểm quanh centroid và lấy trung bình")
@@ -386,13 +470,13 @@ def crawl_all():
             f"{safe}_{START_DATE}_{END_DATE}.csv"
         )
 
-        if os.path.exists(fpath):
-            df = pd.read_csv(
-                fpath,
-                parse_dates=["date", "sunrise", "sunset"]
-            )
-            print(f"  ⏭️  Đã có file ({len(df)} dòng)")
+        df = load_complete_province_file(fpath)
+        if df is not None:
+            print(f"  ⏭️  Đã có file hoàn chỉnh ({len(df)} dòng)")
         else:
+            if os.path.exists(fpath):
+                print("  ♻️  File cũ chưa đủ hoặc lỗi, sẽ crawl lại tỉnh này")
+
             df = crawl_province(name, points)
             if df is not None:
                 df.to_csv(fpath, index=False, encoding="utf-8-sig")
