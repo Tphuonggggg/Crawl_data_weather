@@ -387,6 +387,12 @@ def crawl_point(name, lat, lon):
         if "sunset" in df.columns:
             df["sunset"] = pd.to_datetime(df["sunset"])
 
+        # Ensure all expected daily variables exist in the dataframe.
+        # If the API didn't return some fields (e.g. UV index or precip probability),
+        # create them with NaN so saved CSVs are consistent and validation succeeds.
+        for var in DAILY_VARS:
+            if var not in df.columns:
+                df[var] = pd.NA
         df["month"] = df["date"].dt.month
         df["week"] = df["date"].dt.isocalendar().week.astype(int)
         df["season"] = df["month"].map({
